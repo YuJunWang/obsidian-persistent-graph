@@ -119,7 +119,8 @@ export class GraphManager {
 		} else {
 			const baseDuration = this.settings.restoreAnimationDuration;
 			const startTime = Date.now();
-			
+			const globalDelay = 100;
+
 			const currentNodes = graphLeaf.view.renderer.nodes;
 			const currentPositions = new Map();
 			currentNodes.forEach((node: any) => {
@@ -152,7 +153,8 @@ export class GraphManager {
 					distance,
 					folder,
 					delay: 0,
-					duration: baseDuration // 預設給予設定的基礎時間
+					duration: baseDuration,
+					initialSent: false
 				};
 			});
 
@@ -176,22 +178,27 @@ export class GraphManager {
 			});
 
 			animations.forEach(anim => {
-				anim.delay = folderDelays.get(anim.folder)!;
+				const jitter = (Math.random() - 0.5) * 30;
+				anim.delay = folderDelays.get(anim.folder)! + jitter;
 			});
+
+			const elasticPeriod = 0.4;
+			const elasticS = (elasticPeriod / (2 * Math.PI)) * Math.asin(1);
 
 			const animate = () => {
 				const now = Date.now();
 				let allDone = true;
-				
-				const globalDelay = 100; 
 
 				animations.forEach(anim => {
 					const elapsed = now - (startTime + globalDelay + anim.delay);
 					if (elapsed < 0) {
 						// Not started yet
-						graphLeaf!.view.renderer.worker.postMessage({
-							forceNode: { id: anim.id, x: anim.startX, y: anim.startY }
-						});
+						if (!anim.initialSent) {
+							graphLeaf!.view.renderer.worker.postMessage({
+								forceNode: { id: anim.id, x: anim.startX, y: anim.startY }
+							});
+							anim.initialSent = true;
+						}
 						allDone = false;
 						return;
 					}
@@ -199,10 +206,9 @@ export class GraphManager {
 					// 使用該節點的專屬動畫時長
 					const progress = Math.min(elapsed / anim.duration, 1);
 					
-					// 參考 GSAP 的 back.out(1.4)
-					const c1 = 1.4; 
-					const c3 = c1 + 1;
-					const easeProgress = progress === 1 ? 1 : 1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
+					// elastic.out 曲線計算
+					const easeProgress = progress === 1 ? 1 :
+						Math.pow(2, -10 * progress) * Math.sin((progress - elasticS) * (2 * Math.PI) / elasticPeriod) + 1;
 					
 					const currentX = anim.startX + (anim.targetX - anim.startX) * easeProgress;
 					const currentY = anim.startY + (anim.targetY - anim.startY) * easeProgress;
@@ -226,7 +232,7 @@ export class GraphManager {
 					// wait a bit for render, then unlock nodes
 					setTimeout(() => {
 						this.finishRestoringGraphData(nodePositions, graphLeaf);
-					}, 100);
+					}, 16);
 				}
 			};
 
