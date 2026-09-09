@@ -156,14 +156,16 @@ export class GraphManager {
 				};
 			});
 
-			// 找出整張圖表移動最遠的距離
-			const maxDistance = Math.max(...animations.map(a => a.distance), 1); // 避免為 0
+			// 找出整張圖表移動最遠的距離，用來換算「等速移動」的基準
+			const maxDistance = Math.max(...animations.map(a => a.distance), 1); 
 			
 			animations.forEach(anim => {
-				// 根據距離比例計算每個節點的專屬動畫時長
-				// 最遠的節點會跑滿設定的 100% 時間，距離越短時間越短，最低保障 40% 時間 (避免太短像閃爍)
+				// 完全等速邏輯：時間 = 距離 / 速度
+				// 我們將設定的 baseDuration 視為走完 maxDistance 的時間，算出絕對等速
 				const distanceRatio = anim.distance / maxDistance;
-				anim.duration = baseDuration * (0.4 + 0.6 * distanceRatio);
+				
+				// 確保即使只移動 1 像素，也有 150ms 的底線時間來完成肉眼可見的「彈簧回彈」，避免瞬間閃爍
+				anim.duration = Math.max(150, baseDuration * distanceRatio);
 			});
 
 			// 將資料夾按字母排序，讓動畫有規律的波浪感
