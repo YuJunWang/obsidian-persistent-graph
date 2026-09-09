@@ -102,38 +102,145 @@ export class GraphManager {
 		}
 		if (!graphLeaf) return;
 
-		// set nodes
 		const { nodePositions } = saved;
-		nodePositions.forEach((node) => {
-			graphLeaf!.view.renderer.worker.postMessage({
-				forceNode: node,
+
+		if (!this.settings.enableRestoreAnimation || this.settings.restoreAnimationDuration <= 0) {
+			// set nodes immediately
+			nodePositions.forEach((node) => {
+				graphLeaf!.view.renderer.worker.postMessage({
+					forceNode: node,
+				});
 			});
-		});
 
-		// wait for a render, then unlock nodes
-		setTimeout(async () => {
-			for (let i = 0; i < nodePositions.length; i++) {
-				const node = nodePositions[i];
+			// wait for a render, then unlock nodes
+			setTimeout(() => {
+				this.finishRestoringGraphData(nodePositions, graphLeaf);
+			}, 600);
+		} else {
+			const duration = this.settings.restoreAnimationDuration;
+			const startTime = Date.now();
+			
+			const currentNodes = graphLeaf.view.renderer.nodes;
+			const currentPositions = new Map<string, {x: number, y: number}>();
+			if (currentNodes) {
+				currentNodes.forEach((n: any) => {
+					currentPositions.set(n.id, {x: n.x, y: n.y});
+				});
+			}
 
-				if (!graphLeaf) return;
+			const animations = nodePositions.map(targetNode => {
+				const start = currentPositions.get(targetNode.id);
+				const parts = targetNode.id.split('/');
+				
+				// 通用分組邏輯：自動追蹤到包含該檔案的「最小單位資料夾 (最深層資料夾)」
+				let folder = 'root';
+				if (parts.length > 1) {
+					// 陣列最後一個元素是檔案名稱，前面的部分全部合併即為完整資料夾路徑
+					folder = parts.slice(0, -1).join('/');
+				}
 
-				if (!this.pinManager.isPinned(node.id)) {
-					graphLeaf.view.renderer.worker.postMessage({
+				return {
+					id: targetNode.id,
+					startX: start && typeof start.x === 'number' ? start.x : targetNode.x,
+					startY: start && typeof start.y === 'number' ? start.y : targetNode.y,
+					targetX: targetNode.x,
+					targetY: targetNode.y,
+					folder: folder,
+					delay: 0
+				};
+			});
+
+			// 將資料夾按字母排序，讓動畫有規律的波浪感
+			const uniqueFolders = Array.from(new Set(animations.map(a => a.folder))).sort();
+			const folderDelays = new Map<string, number>();
+			uniqueFolders.forEach((folder, index) => {
+				// 參考 GSAP 慣例，stagger (接力延遲) 設為 80ms (0.08s)，太長會顯得拖沓
+				folderDelays.set(folder, index * 80); 
+			});
+
+			animations.forEach(anim => {
+				anim.delay = folderDelays.get(anim.folder)!;
+			});
+
+			const animate = () => {
+				const now = Date.now();
+				let allDone = true;
+				
+				// 參考網頁動畫回饋準則，使用者的操作應該在 100ms 內得到回應。
+				// 100ms 剛好足夠大腦意識到現在是「散亂的狀態」，接著馬上開始流暢地校正。
+				const globalDelay = 100; 
+
+				animations.forEach(anim => {
+					const elapsed = now - (startTime + globalDelay + anim.delay);
+					if (elapsed < 0) {
+						// Not started yet
+						graphLeaf!.view.renderer.worker.postMessage({
+							forceNode: { id: anim.id, x: anim.startX, y: anim.startY }
+						});
+						allDone = false;
+						return;
+					}
+					
+					const progress = Math.min(elapsed / duration, 1);
+					
+					// 參考 GSAP 的 back.out(1.4)，這比預設的 1.7 更柔和，
+					// 但保留了明顯且輕巧的「越界並滑回」效果。
+					const c1 = 1.4; 
+					const c3 = c1 + 1;
+					const easeProgress = progress === 1 ? 1 : 1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
+					
+					const currentX = anim.startX + (anim.targetX - anim.startX) * easeProgress;
+					const currentY = anim.startY + (anim.targetY - anim.startY) * easeProgress;
+					
+					graphLeaf!.view.renderer.worker.postMessage({
 						forceNode: {
-							id: node.id,
-							x: null,
-							y: null
+							id: anim.id,
+							x: currentX,
+							y: currentY
 						}
 					});
-				}
-			} // end for
+					
+					if (progress < 1) {
+						allDone = false;
+					}
+				});
 
-			if (this.settings.timesShowedRestoredNotification < 5 ) {
-				new Notice('Automatically restored node positions');
-				this.settings.timesShowedRestoredNotification++;
-				await this.plugin.saveSettings();
+				if (!allDone) {
+					window.requestAnimationFrame(animate);
+				} else {
+					// wait a bit for render, then unlock nodes
+					setTimeout(() => {
+						this.finishRestoringGraphData(nodePositions, graphLeaf);
+					}, 100);
+				}
+			};
+
+			window.requestAnimationFrame(animate);
+		}
+	}
+
+	private async finishRestoringGraphData(nodePositions: any[], graphLeaf?: CustomLeaf) {
+		for (let i = 0; i < nodePositions.length; i++) {
+			const node = nodePositions[i];
+
+			if (!graphLeaf) return;
+
+			if (!this.pinManager.isPinned(node.id)) {
+				graphLeaf.view.renderer.worker.postMessage({
+					forceNode: {
+						id: node.id,
+						x: null,
+						y: null
+					}
+				});
 			}
-		}, 600);
+		} // end for
+
+		if (this.settings.timesShowedRestoredNotification < 5 ) {
+			new Notice('Automatically restored node positions');
+			this.settings.timesShowedRestoredNotification++;
+			await this.plugin.saveSettings();
+		}
 	}
 
 	freedWorkspacesData() {
