@@ -158,32 +158,31 @@ export class GraphManager {
 				};
 			});
 
-			// 找出整張圖表移動最遠的距離，用來換算「等速移動」的基準
+			// 找出整張圖表移動最遠的距離，用來換算流暢移動的基準
 			const maxDistance = Math.max(...animations.map(a => a.distance), 1); 
 			
 			animations.forEach(anim => {
-				// 完全等速邏輯：時間 = 距離 / 速度
-				// 我們將設定的 baseDuration 視為走完 maxDistance 的時間，算出絕對等速
 				const distanceRatio = anim.distance / maxDistance;
-				
-				// 確保即使只移動 1 像素，也有 150ms 的底線時間來完成肉眼可見的「彈簧回彈」，避免瞬間閃爍
-				anim.duration = Math.max(150, baseDuration * distanceRatio);
+				// [滑順改善] 提高最低門檻至 350ms，且混合距離權重 (0.35 + 0.65 * ratio)
+				// 避免近距離節點在 150ms 內暴衝抽搐，給予充裕時間進行優雅的漸進滑行
+				anim.duration = Math.max(350, baseDuration * (0.35 + 0.65 * distanceRatio));
 			});
 
 			// 將資料夾按字母排序，讓動畫有規律的波浪感
 			const uniqueFolders = Array.from(new Set(animations.map(a => a.folder))).sort();
 			const folderDelays = new Map<string, number>();
 			uniqueFolders.forEach((folder, index) => {
-				folderDelays.set(folder, index * 80); 
+				folderDelays.set(folder, index * 70); 
 			});
 
 			animations.forEach(anim => {
-				const jitter = (Math.random() - 0.5) * 30;
-				anim.delay = folderDelays.get(anim.folder)! + jitter;
+				// [滑順改善] 移除隨機抖動，回歸純淨整齊的波浪節奏，避免鄰近節點視覺雜亂
+				anim.delay = folderDelays.get(anim.folder)!;
 			});
 
-			const elasticPeriod = 0.4;
-			const elasticS = (elasticPeriod / (2 * Math.PI)) * Math.asin(1);
+			// 柔和磁吸回彈係數：c1 = 0.6 產生約 1.5% 的微幅越界，如同高級氣壓懸吊般自然沉降
+			const c1 = 0.6;
+			const c3 = c1 + 1;
 
 			const animate = () => {
 				const now = Date.now();
@@ -192,7 +191,7 @@ export class GraphManager {
 				animations.forEach(anim => {
 					const elapsed = now - (startTime + globalDelay + anim.delay);
 					if (elapsed < 0) {
-						// Not started yet
+						// 等待中的節點只在第一次發送初始定位
 						if (!anim.initialSent) {
 							graphLeaf!.view.renderer.worker.postMessage({
 								forceNode: { id: anim.id, x: anim.startX, y: anim.startY }
@@ -206,9 +205,10 @@ export class GraphManager {
 					// 使用該節點的專屬動畫時長
 					const progress = Math.min(elapsed / anim.duration, 1);
 					
-					// elastic.out 曲線計算
+					// [滑順改善] 單一平滑減速曲線 (Soft back.out 0.6)
+					// 完全去除 elastic.out 多重高頻振盪造成的抽動與粗暴感
 					const easeProgress = progress === 1 ? 1 :
-						Math.pow(2, -10 * progress) * Math.sin((progress - elasticS) * (2 * Math.PI) / elasticPeriod) + 1;
+						1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
 					
 					const currentX = anim.startX + (anim.targetX - anim.startX) * easeProgress;
 					const currentY = anim.startY + (anim.targetY - anim.startY) * easeProgress;
