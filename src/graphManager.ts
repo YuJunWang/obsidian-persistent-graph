@@ -117,44 +117,59 @@ export class GraphManager {
 				this.finishRestoringGraphData(nodePositions, graphLeaf);
 			}, 600);
 		} else {
-			const duration = this.settings.restoreAnimationDuration;
+			const baseDuration = this.settings.restoreAnimationDuration;
 			const startTime = Date.now();
 			
 			const currentNodes = graphLeaf.view.renderer.nodes;
-			const currentPositions = new Map<string, {x: number, y: number}>();
-			if (currentNodes) {
-				currentNodes.forEach((n: any) => {
-					currentPositions.set(n.id, {x: n.x, y: n.y});
-				});
-			}
+			const currentPositions = new Map();
+			currentNodes.forEach((node: any) => {
+				currentPositions.set(node.id, { x: node.x, y: node.y });
+			});
 
 			const animations = nodePositions.map(targetNode => {
 				const start = currentPositions.get(targetNode.id);
 				const parts = targetNode.id.split('/');
 				
-				// 通用分組邏輯：自動追蹤到包含該檔案的「最小單位資料夾 (最深層資料夾)」
 				let folder = 'root';
 				if (parts.length > 1) {
-					// 陣列最後一個元素是檔案名稱，前面的部分全部合併即為完整資料夾路徑
 					folder = parts.slice(0, -1).join('/');
 				}
 
+				const startX = start && typeof start.x === 'number' ? start.x : targetNode.x;
+				const startY = start && typeof start.y === 'number' ? start.y : targetNode.y;
+				const targetX = targetNode.x;
+				const targetY = targetNode.y;
+				
+				// 計算該節點需要移動的直線距離
+				const distance = Math.sqrt(Math.pow(targetX - startX, 2) + Math.pow(targetY - startY, 2));
+
 				return {
 					id: targetNode.id,
-					startX: start && typeof start.x === 'number' ? start.x : targetNode.x,
-					startY: start && typeof start.y === 'number' ? start.y : targetNode.y,
-					targetX: targetNode.x,
-					targetY: targetNode.y,
-					folder: folder,
-					delay: 0
+					startX,
+					startY,
+					targetX,
+					targetY,
+					distance,
+					folder,
+					delay: 0,
+					duration: baseDuration // 預設給予設定的基礎時間
 				};
+			});
+
+			// 找出整張圖表移動最遠的距離
+			const maxDistance = Math.max(...animations.map(a => a.distance), 1); // 避免為 0
+			
+			animations.forEach(anim => {
+				// 根據距離比例計算每個節點的專屬動畫時長
+				// 最遠的節點會跑滿設定的 100% 時間，距離越短時間越短，最低保障 40% 時間 (避免太短像閃爍)
+				const distanceRatio = anim.distance / maxDistance;
+				anim.duration = baseDuration * (0.4 + 0.6 * distanceRatio);
 			});
 
 			// 將資料夾按字母排序，讓動畫有規律的波浪感
 			const uniqueFolders = Array.from(new Set(animations.map(a => a.folder))).sort();
 			const folderDelays = new Map<string, number>();
 			uniqueFolders.forEach((folder, index) => {
-				// 參考 GSAP 慣例，stagger (接力延遲) 設為 80ms (0.08s)，太長會顯得拖沓
 				folderDelays.set(folder, index * 80); 
 			});
 
@@ -166,8 +181,6 @@ export class GraphManager {
 				const now = Date.now();
 				let allDone = true;
 				
-				// 參考網頁動畫回饋準則，使用者的操作應該在 100ms 內得到回應。
-				// 100ms 剛好足夠大腦意識到現在是「散亂的狀態」，接著馬上開始流暢地校正。
 				const globalDelay = 100; 
 
 				animations.forEach(anim => {
@@ -181,10 +194,10 @@ export class GraphManager {
 						return;
 					}
 					
-					const progress = Math.min(elapsed / duration, 1);
+					// 使用該節點的專屬動畫時長
+					const progress = Math.min(elapsed / anim.duration, 1);
 					
-					// 參考 GSAP 的 back.out(1.4)，這比預設的 1.7 更柔和，
-					// 但保留了明顯且輕巧的「越界並滑回」效果。
+					// 參考 GSAP 的 back.out(1.4)
 					const c1 = 1.4; 
 					const c3 = c1 + 1;
 					const easeProgress = progress === 1 ? 1 : 1 + c3 * Math.pow(progress - 1, 3) + c1 * Math.pow(progress - 1, 2);
